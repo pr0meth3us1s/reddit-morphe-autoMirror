@@ -1,0 +1,115 @@
+name: Mirror Reddit APK
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch latest upstream release JSON
+        run: |
+          curl -fsSL "https://api.github.com/repos/RookieEnough/Morphe-AutoBuilds/releases/latest" -o release.json
+
+      - name: Pick Reddit APK and build names
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ASSET_NAME=$(jq -r '
+            .assets[]
+            | select(.name | test("reddit"; "i"))
+            | select(.name | test("\\.apk$"; "i"))
+            | .name
+          ' release.json | head -n 1)
+
+          ASSET_URL=$(jq -r --arg NAME "$ASSET_NAME" '
+            .assets[]
+            | select(.name == $NAME)
+            | .browser_download_url
+          ' release.json)
+
+          UPSTREAM_TAG=$(jq -r '.tag_name' release.json)
+          UPSTREAM_NAME=$(jq -r '.name' release.json)
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          if [ -z "${ASSET_NAME:-}" ] || [ "$ASSET_NAME" = "null" ]; then
+            echo "No Reddit APK asset found in upstream release."
+            exit 1
+          fi
+
+          if [ -z "${ASSET_URL:-}" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "No download URL found for selected Reddit APK asset."
+            exit 1
+          fi
+
+          VERSION=$(printf '%s\n' "$ASSET_NAME" | sed -n 's/.*-v\([0-9][0-9.]*\)\.apk$/\1/p')
+          if [ -z "${VERSION:-}" ]; then
+            VERSION="$UPSTREAM_TAG"
+          fi
+
+          SAFE_VERSION=$(printf '%s' "$VERSION" | tr -cd '[:alnum:]._-')
+
+          MIRROR_TAG="v${SAFE_VERSION}"
+          RELEASE_TITLE="v${SAFE_VERSION}"
+          VERSIONED_NAME="reddit-Morphe-${BUILD_DATE}-v${SAFE_VERSION}.apk"
+
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_url=$ASSET_URL" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream_name=$UPSTREAM_NAME" >> "$GITHUB_OUTPUT"
+          echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
+          echo "version=$SAFE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "mirror_tag=$MIRROR_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_title=$RELEASE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "versioned_name=$VERSIONED_NAME" >> "$GITHUB_OUTPUT"
+
+          echo "Selected upstream asset: $ASSET_NAME"
+          echo "Build date: $BUILD_DATE"
+          echo "Version: $SAFE_VERSION"
+          echo "Mirror release tag: $MIRROR_TAG"
+          echo "Mirror release title: $RELEASE_TITLE"
+          echo "Mirror APK filename: $VERSIONED_NAME"
+
+      - name: Skip if mirrored release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.pick.outputs.mirror_tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists, nothing to do."
+            exit 0
+          fi
+
+      - name: Download APK
+        run: |
+          curl -fL "${{ steps.pick.outputs.asset_url }}" -o "${{ steps.pick.outputs.versioned_name }}"
+          ls -lh "${{ steps.pick.outputs.versioned_name }}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.pick.outputs.mirror_tag }}" \
+            "${{ steps.pick.outputs.versioned_name }}" \
+            -R "$GITHUB_REPOSITORY" \
+            --title "${{ steps.pick.outputs.release_title }}" \
+            --notes "## Reddit Morphe Mirror
+
+          Mirrored from \`RookieEnough/Morphe-AutoBuilds\`
+
+          - Build date: \`${{ steps.pick.outputs.build_date }}\`
+          - Upstream release name: ${{ steps.pick.outputs.upstream_name }}
+          - Upstream tag: \`${{ steps.pick.outputs.upstream_tag }}\`
+          - Extracted version: \`${{ steps.pick.outputs.version }}\`
+          - Original asset: \`${{ steps.pick.outputs.asset_name }}\`
+          - Mirrored asset: \`${{ steps.pick.outputs.versioned_name }}\`
+
+          This release contains exactly one Reddit Morphe APK for easier Obtanium detection." \
+            --latest
