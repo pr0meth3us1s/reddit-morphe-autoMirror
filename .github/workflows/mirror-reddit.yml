@@ -3,7 +3,8 @@ name: Mirror Reddit APK
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 */6 * * *"
+    - cron: "0 8 * * *"
+      timezone: "Europe/Prague"
 
 permissions:
   contents: write
@@ -25,7 +26,7 @@ jobs:
 
           ASSET_NAME=$(jq -r '
             .assets[]
-            | select(.name | test("reddit"; "i"))
+            | select(.name | test("^reddit-"; "i"))
             | select(.name | test("\\.apk$"; "i"))
             | .name
           ' release.json | head -n 1)
@@ -38,10 +39,12 @@ jobs:
 
           UPSTREAM_TAG=$(jq -r '.tag_name' release.json)
           UPSTREAM_NAME=$(jq -r '.name' release.json)
-          BUILD_DATE=$(date -u +%Y-%m-%d)
+          BUILD_DATE=$(TZ=Europe/Prague date +%Y-%m-%d)
 
           if [ -z "${ASSET_NAME:-}" ] || [ "$ASSET_NAME" = "null" ]; then
             echo "No Reddit APK asset found in upstream release."
+            echo "Available APK assets:"
+            jq -r '.assets[] | .name' release.json | grep -i '\.apk$' || true
             exit 1
           fi
 
@@ -78,21 +81,30 @@ jobs:
           echo "Mirror release title: $RELEASE_TITLE"
           echo "Mirror APK filename: $VERSIONED_NAME"
 
-      - name: Skip if mirrored release already exists
+      - name: Check if mirrored release already exists
+        id: check
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           if gh release view "${{ steps.pick.outputs.mirror_tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release already exists, nothing to do."
-            exit 0
+            echo "should_create=false" >> "$GITHUB_OUTPUT"
+            echo "Release already exists."
+          else
+            echo "should_create=true" >> "$GITHUB_OUTPUT"
+            echo "Release does not exist yet."
           fi
 
       - name: Download APK
+        if: steps.check.outputs.should_create == 'true'
         run: |
           curl -fL "${{ steps.pick.outputs.asset_url }}" -o "${{ steps.pick.outputs.versioned_name }}"
           ls -lh "${{ steps.pick.outputs.versioned_name }}"
 
       - name: Create release
+        if: steps.check.outputs.should_create == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
