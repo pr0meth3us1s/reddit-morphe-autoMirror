@@ -3,7 +3,7 @@ name: Mirror Reddit APK
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 8 * * *"
+    - cron: "55 10 * * *"
       timezone: "Europe/Prague"
 
 permissions:
