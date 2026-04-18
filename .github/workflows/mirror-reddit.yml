@@ -1,14 +1,19 @@
-name: Mirror Reddit APK
+name: Morphed Reddit Mirror APK
+
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "55 10 * * *"
+    - cron: "55 9 * * *"
       timezone: "Europe/Prague"
 
 permissions:
   contents: write
 
+env:
+  APP_DISPLAY: Reddit
+  APP_SLUG: reddit
+  
 jobs:
   mirror:
     runs-on: ubuntu-latest
@@ -18,15 +23,15 @@ jobs:
         run: |
           curl -fsSL "https://api.github.com/repos/RookieEnough/Morphe-AutoBuilds/releases/latest" -o release.json
 
-      - name: Pick Reddit APK and build names
+      - name: Pick APK and build names
         id: pick
         shell: bash
         run: |
           set -euo pipefail
 
-          ASSET_NAME=$(jq -r '
+          ASSET_NAME=$(jq -r --arg SLUG "$APP_SLUG" '
             .assets[]
-            | select(.name | test("^reddit-"; "i"))
+            | select(.name | test("^" + $SLUG + "-"; "i"))
             | select(.name | test("\\.apk$"; "i"))
             | .name
           ' release.json | head -n 1)
@@ -39,35 +44,39 @@ jobs:
 
           UPSTREAM_TAG=$(jq -r '.tag_name' release.json)
           UPSTREAM_NAME=$(jq -r '.name' release.json)
-          BUILD_DATE=$(TZ=Europe/Prague date +%Y-%m-%d)
+          UPSTREAM_PUBLISHED_AT=$(jq -r '.published_at' release.json)
 
           if [ -z "${ASSET_NAME:-}" ] || [ "$ASSET_NAME" = "null" ]; then
-            echo "No Reddit APK asset found in upstream release."
+            echo "No $APP_DISPLAY APK asset found in upstream release."
             echo "Available APK assets:"
             jq -r '.assets[] | .name' release.json | grep -i '\.apk$' || true
             exit 1
           fi
 
           if [ -z "${ASSET_URL:-}" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "No download URL found for selected Reddit APK asset."
+            echo "No download URL found for selected $APP_DISPLAY APK asset."
             exit 1
           fi
 
-          VERSION=$(printf '%s\n' "$ASSET_NAME" | sed -n 's/.*-v\([0-9][0-9.]*\)\.apk$/\1/p')
+          VERSION=$(printf '%s\n' "$ASSET_NAME" | sed -n 's/.*-v\([0-9][0-9A-Za-z.+-]*\)\.apk$/\1/p')
           if [ -z "${VERSION:-}" ]; then
             VERSION="$UPSTREAM_TAG"
           fi
 
-          SAFE_VERSION=$(printf '%s' "$VERSION" | tr -cd '[:alnum:]._-')
+          SAFE_VERSION=$(printf '%s' "$VERSION" | tr -cd '[:alnum:]._.+-')
+          BUILD_ID=$(printf '%s' "$UPSTREAM_PUBLISHED_AT" | sed 's/T/-/; s/:/-/g; s/Z$//')
+          BUILD_DATE=$(TZ=Europe/Prague date -d "$UPSTREAM_PUBLISHED_AT" +%Y-%m-%d)
 
-          MIRROR_TAG="v${SAFE_VERSION}"
-          RELEASE_TITLE="v${SAFE_VERSION}"
-          VERSIONED_NAME="reddit-Morphe-${BUILD_DATE}-v${SAFE_VERSION}.apk"
+          MIRROR_TAG="${BUILD_ID}-v${SAFE_VERSION}"
+          RELEASE_TITLE="${APP_DISPLAY} build ${BUILD_DATE} • v${SAFE_VERSION}"
+          VERSIONED_NAME="${APP_SLUG}-Morphe-${BUILD_DATE}-build-${BUILD_ID}-v${SAFE_VERSION}.apk"
 
           echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
           echo "asset_url=$ASSET_URL" >> "$GITHUB_OUTPUT"
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
           echo "upstream_name=$UPSTREAM_NAME" >> "$GITHUB_OUTPUT"
+          echo "upstream_published_at=$UPSTREAM_PUBLISHED_AT" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
           echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
           echo "version=$SAFE_VERSION" >> "$GITHUB_OUTPUT"
           echo "mirror_tag=$MIRROR_TAG" >> "$GITHUB_OUTPUT"
@@ -75,13 +84,14 @@ jobs:
           echo "versioned_name=$VERSIONED_NAME" >> "$GITHUB_OUTPUT"
 
           echo "Selected upstream asset: $ASSET_NAME"
-          echo "Build date: $BUILD_DATE"
+          echo "Upstream published at: $UPSTREAM_PUBLISHED_AT"
+          echo "Build id: $BUILD_ID"
           echo "Version: $SAFE_VERSION"
           echo "Mirror release tag: $MIRROR_TAG"
           echo "Mirror release title: $RELEASE_TITLE"
           echo "Mirror APK filename: $VERSIONED_NAME"
 
-      - name: Check if mirrored release already exists
+      - name: Check if mirrored build already exists
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,10 +101,10 @@ jobs:
 
           if gh release view "${{ steps.pick.outputs.mirror_tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "should_create=false" >> "$GITHUB_OUTPUT"
-            echo "Release already exists."
+            echo "Build already mirrored."
           else
             echo "should_create=true" >> "$GITHUB_OUTPUT"
-            echo "Release does not exist yet."
+            echo "Build not mirrored yet."
           fi
 
       - name: Download APK
@@ -112,16 +122,18 @@ jobs:
             "${{ steps.pick.outputs.versioned_name }}" \
             -R "$GITHUB_REPOSITORY" \
             --title "${{ steps.pick.outputs.release_title }}" \
-            --notes "## Reddit Morphe Mirror
+            --notes "## $APP_DISPLAY Morphe Mirror
 
           Mirrored from \`RookieEnough/Morphe-AutoBuilds\`
 
-          - Build date: \`${{ steps.pick.outputs.build_date }}\`
           - Upstream release name: ${{ steps.pick.outputs.upstream_name }}
           - Upstream tag: \`${{ steps.pick.outputs.upstream_tag }}\`
+          - Upstream published at: \`${{ steps.pick.outputs.upstream_published_at }}\`
+          - Build id: \`${{ steps.pick.outputs.build_id }}\`
+          - Build date: \`${{ steps.pick.outputs.build_date }}\`
           - Extracted version: \`${{ steps.pick.outputs.version }}\`
           - Original asset: \`${{ steps.pick.outputs.asset_name }}\`
           - Mirrored asset: \`${{ steps.pick.outputs.versioned_name }}\`
 
-          This release contains exactly one Reddit Morphe APK for easier Obtanium detection." \
+          This mirror creates a new release for each upstream daily build, even when the app version stays the same." \
             --latest
